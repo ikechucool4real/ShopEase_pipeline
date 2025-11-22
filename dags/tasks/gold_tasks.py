@@ -14,12 +14,17 @@ def aggregate_silver_to_gold(
 
     # load data from silver layer to gold schema
     logger = logging.getLogger("airflow.task")
+    gold_base_path = f"s3://{s3_bucket}/{to_folder}/{table_name}/"
+    
     try:
         import awswrangler as wr
-        wr.config.distributed = False
 
         logger.info(f"Getting {table_name} from silver schema")
-        df = wr.s3.read_parquet(silver_s3_path)
+        if wr.s3.list_objects(silver_s3_path):
+            df = wr.s3.read_parquet(silver_s3_path)
+        else:
+            logger.warning(f"No raw data found at {silver_s3_path}")
+            return gold_base_path
 
         agg = (
             df.groupby(["store_id", "product_id"])
@@ -29,19 +34,17 @@ def aggregate_silver_to_gold(
             .reset_index()
             )
 
-        gold_s3_path = f"s3://{s3_bucket}/{to_folder}/{table_name}/"
-
         wr.s3.to_parquet(
             df = agg,
-            path = gold_s3_path,
+            path = gold_base_path,
             dataset = True,
             mode = "overwrite",
             database = catalog_db,
             table = f"gold_{table_name}"
         )
 
-        logger.info(f"loaded {table_name} to gold schema")
-        return gold_s3_path
+        logger.info(f"loaded {len(agg)} to {gold_base_path}")
+        return gold_base_path
 
     except Exception as e:
         logger.error(f"Error loading {table_name} from silver to gold schema: {str(e)}", exc_info=True)

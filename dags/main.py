@@ -22,7 +22,7 @@ base_dir = Path(__file__).resolve().parents[2]
 load_dotenv(base_dir/'.env')
 
 tables = json.loads(os.getenv("tables", "[]"))
-tables_with_updated_at = json.loads(os.getenv("tables_with_updated_at", "[]"))
+tables_with_partition_col = json.loads(os.getenv("tables_with_partition_col", "[]"))
 tables_with_append_only = json.loads(os.getenv("tables_with_append_only", "[]"))
 table_in_gold = json.loads(os.getenv("table_in_gold", "[]"))
 postgres_conn = json.loads(os.getenv("postgres_conn", "{}"))
@@ -34,6 +34,7 @@ bronze_path = os.getenv("bronze_path")
 silver_path = os.getenv("silver_path")
 gold_path = os.getenv("gold_path")
 catalog_db = os.getenv("catalog_db")
+partition_col = os.getenv("partition_col")
 
 # Defining Airflow DAG
 default_args = {
@@ -44,7 +45,7 @@ default_args = {
 @dag(
     dag_id="etl_pipeline",
     default_args=default_args,
-    start_date=datetime(2025, 11, 21),
+    start_date=datetime(2025, 11, 22),
     schedule="@daily",
     catchup=False,
     tags=["postgres", "s3", "pipeline"]
@@ -60,12 +61,13 @@ def full_pipeline():
     for table in tables:
         raw_tasks[table] = extract_postgresql_to_s3.override(task_id=f"raw_{table}")(
             table_name=table,
-            updated_at_exists=table in tables_with_updated_at,
+            partition_col_exists=table in tables_with_partition_col,
             run_date=run_date,
             prev_run_date=prev_run_date,
             postgres_conn=postgres_conn,
             s3_bucket=s3_bucket,
-            to_folder=raw_path
+            to_folder=raw_path,
+            partition_col=partition_col
         )
     logger.info(f"Extracted {tables} from postgresql and loading to {raw_tasks[table]}")
     
@@ -78,7 +80,7 @@ def full_pipeline():
             s3_bucket=s3_bucket,
             raw_s3_path=raw_tasks[table],
             to_folder=bronze_path,
-            catalog_db=catalog_db
+            catalog_db=catalog_db,
         )
         raw_tasks[table] >> bronze_tasks[table]
     logger.info(f"Extracted {tables} from raw and loading to {bronze_tasks[table]}")
@@ -89,10 +91,11 @@ def full_pipeline():
         silver_tasks[table] = load_bronze_to_silver.override(task_id=f"silver_{table}")(
             table_name=table,
             table_id=id_map[table],
-            updated_at_exists=table in tables_with_updated_at,
             s3_bucket=s3_bucket,
             bronze_s3_path=bronze_tasks[table],
             to_folder=silver_path,
+            partition_col_exists=table in tables_with_partition_col,
+            partition_col=partition_col,
             catalog_db=catalog_db,
             append_only=table in tables_with_append_only
         )
